@@ -15,7 +15,23 @@ if (!app.isDefaultProtocolClient('sunshine')) {
   app.setAsDefaultProtocolClient('sunshine');
 }
 
+function cleanupServices() {
+  if (audioDetectionService) {
+    audioDetectionService.stopMonitoring();
+    audioDetectionService = null;
+  }
+  if (meetingService) {
+    meetingService.dispose();
+    meetingService = null;
+  }
+}
+
 function createWindow() {
+  // Cleanup any existing services
+  cleanupServices();
+
+  console.log('Creating main window...');
+
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -26,29 +42,55 @@ function createWindow() {
     }
   });
 
+  console.log('Loading content...');
+  
   if (process.env.NODE_ENV === 'development') {
-    mainWindow.loadURL('http://localhost:3000');
+    console.log('Development mode: Loading from localhost:3000');
+    mainWindow.loadURL('http://localhost:3000').catch(error => {
+      console.error('Failed to load URL:', error);
+    });
     mainWindow.webContents.openDevTools();
   } else {
-    mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+    console.log('Production mode: Loading from file');
+    mainWindow.loadFile(path.join(__dirname, '../renderer/index.html')).catch(error => {
+      console.error('Failed to load file:', error);
+    });
+    mainWindow.webContents.openDevTools(); // Also show DevTools in production for debugging
   }
 
   // Initialize audio detection service
   if (mainWindow) {
+    console.log('Initializing audio detection service...');
     audioDetectionService = new AudioDetectionService(mainWindow);
     audioDetectionService.startMonitoring();
   }
 
-  // Initialize MeetingService
-  meetingService = new MeetingService(mainWindow);
+  // Initialize MeetingService using singleton pattern
+  console.log('Initializing meeting service...');
+  meetingService = MeetingService.getInstance(mainWindow);
+
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+    console.error('Failed to load:', errorCode, errorDescription);
+  });
+
+  mainWindow.webContents.on('did-finish-load', () => {
+    console.log('Window finished loading');
+  });
 
   mainWindow.on('closed', () => {
-    if (audioDetectionService) {
-      audioDetectionService.stopMonitoring();
-    }
+    console.log('Window closed, cleaning up services...');
+    cleanupServices();
     mainWindow = null;
   });
 }
+
+// Set up IPC handlers
+ipcMain.on('close-window', (event) => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (window) {
+    window.close();
+  }
+});
 
 app.whenReady().then(() => {
   createWindow();
@@ -68,6 +110,7 @@ app.on('open-url', (event, url) => {
 });
 
 app.on('window-all-closed', () => {
+  cleanupServices();
   if (process.platform !== 'darwin') {
     app.quit();
   }
@@ -76,18 +119,5 @@ app.on('window-all-closed', () => {
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) {
     createWindow();
-  }
-});
-
-// Handle meeting-related IPC events
-ipcMain.handle('start-meeting', async () => {
-  if (meetingService) {
-    await meetingService.startRecording();
-  }
-});
-
-ipcMain.handle('stop-meeting', async () => {
-  if (meetingService) {
-    await meetingService.stopRecording();
   }
 }); 

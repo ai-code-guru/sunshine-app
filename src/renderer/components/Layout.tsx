@@ -6,7 +6,8 @@ import {
   DocumentTextIcon,
   DocumentDuplicateIcon,
   UserGroupIcon,
-  Cog6ToothIcon
+  Cog6ToothIcon,
+  LinkIcon
 } from '@heroicons/react/24/outline';
 import SunIcon from './SunIcon';
 
@@ -45,13 +46,13 @@ const Layout: React.FC<LayoutProps> = ({ children, onNavigate, currentView }) =>
             <CalendarIcon className="w-5 h-5" />
             <span>Calendar</span>
           </button>
+          <button onClick={() => onNavigate('bookings')} className={navLinkClasses('bookings')}>
+            <LinkIcon className="w-5 h-5" />
+            <span>Booking Links</span>
+          </button>
           <button onClick={() => onNavigate('availability')} className={navLinkClasses('availability')}>
             <ClockIcon className="w-5 h-5" />
             <span>Availability</span>
-          </button>
-          <button onClick={() => onNavigate('bookings')} className={navLinkClasses('bookings')}>
-            <CalendarIcon className="w-5 h-5" />
-            <span>Booking Links</span>
           </button>
           <button onClick={() => onNavigate('chat')} className={navLinkClasses('chat')}>
             <ChatBubbleLeftRightIcon className="w-5 h-5" />

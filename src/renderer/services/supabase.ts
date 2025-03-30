@@ -3,7 +3,42 @@ import { createClient } from '@supabase/supabase-js';
 const supabaseUrl = 'https://koyimcgjaoqxvwyscwaz.supabase.co';
 const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtveWltY2dqYW9xeHZ3eXNjd2F6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDI0Nzk0OTAsImV4cCI6MjA1ODA1NTQ5MH0.XS6bfk65fNVSDmKD2k6CzbonON7DTYN9cyVn-S5uwNI';
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+if (!supabaseUrl || !supabaseAnonKey) {
+  throw new Error('Missing Supabase configuration. Please check your environment variables.');
+}
+
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: {
+    autoRefreshToken: true,
+    persistSession: true,
+    storageKey: 'sunshine-auth',
+    storage: window.localStorage,
+    flowType: 'pkce'
+  }
+});
+
+// Initialize auth state
+supabase.auth.onAuthStateChange((event, session) => {
+  console.log('Supabase auth state changed:', event, session);
+  
+  if (event === 'SIGNED_IN') {
+    // Store the session in localStorage
+    localStorage.setItem('supabase.auth.token', JSON.stringify(session));
+    
+    // If we're in the auth callback window, close it
+    if (window.location.pathname === '/auth/callback') {
+      // In Electron, we should use the electron API to close windows
+      if (window.electron) {
+        window.electron.closeWindow();
+      } else {
+        window.close();
+      }
+    }
+  } else if (event === 'SIGNED_OUT') {
+    // Clear the session from localStorage
+    localStorage.removeItem('supabase.auth.token');
+  }
+});
 
 // Types for our database tables
 export interface Profile {

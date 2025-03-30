@@ -3,8 +3,8 @@ import Layout from './components/Layout';
 import CalendarView from './components/CalendarView';
 import NoteTakerView from './components/NoteTakerView';
 import AvailabilityView from './components/AvailabilityView';
-import MeetingPrompt from './components/MeetingPrompt';
 import BookingLinksView from './components/BookingLinksView';
+import MeetingPrompt from './components/MeetingPrompt';
 
 type View = 'calendar' | 'availability' | 'chat' | 'notes' | 'templates' | 'team' | 'settings' | 'bookings';
 
@@ -32,10 +32,12 @@ declare global {
     electron: {
       startMeeting: () => Promise<void>;
       stopMeeting: () => Promise<void>;
-      onMeetingDetected: (callback: () => void) => void;
-      onMeetingEnded: (callback: () => void) => void;
-      onRecordingSaved: (callback: (data: { filePath: string; timestamp: string; size: number }) => void) => void;
-      onRecordingSaveFailed: (callback: (error: Error) => void) => void;
+      onMeetingDetected: (callback: () => void) => () => void;
+      onMeetingEnded: (callback: () => void) => () => void;
+      onRecordingSaved: (callback: (data: { filePath: string; timestamp: string; size: number }) => void) => () => void;
+      onRecordingSaveFailed: (callback: (error: Error) => void) => () => void;
+      openExternal: (url: string) => Promise<void>;
+      closeWindow: () => void;
     };
   }
 }
@@ -82,6 +84,8 @@ const SAMPLE_MEETINGS: Meeting[] = [
 ];
 
 const App: React.FC = () => {
+  console.log('App component rendering...');
+
   const [currentView, setCurrentView] = useState<View>('calendar');
   const [showMeetingPrompt, setShowMeetingPrompt] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -92,19 +96,24 @@ const App: React.FC = () => {
 
   // Set up meeting detection listeners
   React.useEffect(() => {
+    console.log('Setting up event listeners...');
+    
     // Listen for meeting detection
-    window.electron.onMeetingDetected(() => {
+    const cleanupMeetingDetected = window.electron?.onMeetingDetected(() => {
+      console.log('Meeting detected');
       setShowMeetingPrompt(true);
     });
 
     // Listen for meeting end
-    window.electron.onMeetingEnded(() => {
+    const cleanupMeetingEnded = window.electron?.onMeetingEnded(() => {
+      console.log('Meeting ended');
       setIsRecording(false);
       setShowMeetingPrompt(false);
     });
 
     // Listen for recording saved
-    window.electron.onRecordingSaved((data) => {
+    const cleanupRecordingSaved = window.electron?.onRecordingSaved((data) => {
+      console.log('Recording saved:', data);
       setNotification({
         type: 'success',
         message: `Recording saved: ${data.filePath}`
@@ -113,13 +122,23 @@ const App: React.FC = () => {
     });
 
     // Listen for recording save failed
-    window.electron.onRecordingSaveFailed((error) => {
+    const cleanupRecordingSaveFailed = window.electron?.onRecordingSaveFailed((error) => {
+      console.error('Recording save failed:', error);
       setNotification({
         type: 'error',
         message: `Failed to save recording: ${error.message}`
       });
       setTimeout(() => setNotification(null), 5000);
     });
+
+    // Cleanup function
+    return () => {
+      console.log('Cleaning up event listeners...');
+      cleanupMeetingDetected?.();
+      cleanupMeetingEnded?.();
+      cleanupRecordingSaved?.();
+      cleanupRecordingSaveFailed?.();
+    };
   }, []);
 
   const handleStartMeeting = async () => {
@@ -157,10 +176,10 @@ const App: React.FC = () => {
         return <CalendarView />;
       case 'notes':
         return <NoteTakerView />;
-      case 'availability':
-        return <AvailabilityView />;
       case 'bookings':
         return <BookingLinksView />;
+      case 'availability':
+        return <AvailabilityView />;
       case 'chat':
         return (
           <div className="p-6">

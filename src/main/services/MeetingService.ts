@@ -10,9 +10,10 @@ class MeetingService {
   private mediaRecorder: MediaRecorder | null = null;
   private recordedChunks: Blob[] = [];
   private recordingsPath: string;
-  private ipcHandlers: { [key: string]: (...args: any[]) => Promise<void> } = {};
+  private detectionInterval: NodeJS.Timeout | null = null;
+  private static instance: MeetingService | null = null;
 
-  constructor(mainWindow: BrowserWindow) {
+  private constructor(mainWindow: BrowserWindow) {
     this.mainWindow = mainWindow;
     
     // Create recordings directory in user's app data
@@ -25,37 +26,70 @@ class MeetingService {
     this.startMeetingDetection();
   }
 
+  public static getInstance(mainWindow: BrowserWindow): MeetingService {
+    if (!MeetingService.instance) {
+      MeetingService.instance = new MeetingService(mainWindow);
+    } else {
+      MeetingService.instance.mainWindow = mainWindow;
+    }
+    return MeetingService.instance;
+  }
+
   private setupIpcHandlers() {
-    // Remove existing handlers if they exist
+    // First, ensure all handlers are removed
     this.removeIpcHandlers();
 
-    // Set up new handlers
-    this.ipcHandlers = {
-      'start-meeting': async () => await this.startRecording(),
-      'stop-meeting': async () => await this.stopRecording()
-    };
+    try {
+      // Set up handlers with proper error handling
+      ipcMain.handle('start-meeting', async () => {
+        try {
+          await this.startRecording();
+        } catch (error) {
+          console.error('Error in start-meeting handler:', error);
+          throw error;
+        }
+      });
 
-    // Register new handlers
-    Object.entries(this.ipcHandlers).forEach(([channel, handler]) => {
-      ipcMain.handle(channel, handler.bind(this));
-    });
+      ipcMain.handle('stop-meeting', async () => {
+        try {
+          await this.stopRecording();
+        } catch (error) {
+          console.error('Error in stop-meeting handler:', error);
+          throw error;
+        }
+      });
+    } catch (error) {
+      console.error('Error setting up IPC handlers:', error);
+    }
   }
 
   private removeIpcHandlers() {
-    Object.keys(this.ipcHandlers).forEach(channel => {
-      ipcMain.removeHandler(channel);
-    });
+    try {
+      ipcMain.removeHandler('start-meeting');
+      ipcMain.removeHandler('stop-meeting');
+    } catch (error) {
+      console.error('Error removing IPC handlers:', error);
+    }
   }
 
-  private async startMeetingDetection() {
-    // TODO: Implement meeting detection logic
-    // This could involve:
-    // 1. Checking for active video conferencing apps (Zoom, Teams, etc.)
-    // 2. Monitoring system audio for meeting-like activity
-    // 3. Checking calendar events
+  public dispose() {
+    if (this.detectionInterval) {
+      clearInterval(this.detectionInterval);
+      this.detectionInterval = null;
+    }
+    this.removeIpcHandlers();
+    if (this.isRecording) {
+      this.stopRecording();
+    }
+    MeetingService.instance = null;
+  }
+
+  private startMeetingDetection() {
+    if (this.detectionInterval) {
+      clearInterval(this.detectionInterval);
+    }
     
-    // For now, we'll simulate meeting detection with a timer
-    setInterval(() => {
+    this.detectionInterval = setInterval(() => {
       if (!this.isRecording) {
         // Simulate meeting detection every 30 seconds
         if (Math.random() > 0.8) {

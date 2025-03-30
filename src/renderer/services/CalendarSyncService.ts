@@ -64,17 +64,23 @@ export interface Conflict {
   event: CalendarEvent;
 }
 
+export interface SyncState {
+  lastSynced: string | null;
+  hasValidToken: boolean;
+  error: string | null;
+}
+
 class CalendarSyncService {
   private static instance: CalendarSyncService;
   private syncInterval: NodeJS.Timeout | null = null;
   private readonly SYNC_INTERVAL = 5 * 60 * 1000; // 5 minutes
-  private lastSync: Date | null = null;
+  private cachedEvents: CalendarEvent[] = [];
 
   private constructor() {
-    // Initialize last sync from localStorage
-    const lastSyncStr = localStorage.getItem('lastSync');
-    if (lastSyncStr) {
-      this.lastSync = new Date(lastSyncStr);
+    // Load cached events from localStorage
+    const cachedEventsStr = localStorage.getItem('cachedEvents');
+    if (cachedEventsStr) {
+      this.cachedEvents = JSON.parse(cachedEventsStr);
     }
   }
 
@@ -83,6 +89,172 @@ class CalendarSyncService {
       CalendarSyncService.instance = new CalendarSyncService();
     }
     return CalendarSyncService.instance;
+  }
+
+  async getSyncState(): Promise<SyncState> {
+    try {
+      const { data: user } = await supabase.auth.getUser();
+      if (!user?.user) {
+        throw new Error('User not authenticated');
+      }
+
+      const { data: syncToken, error } = await supabase
+        .from('calendar_sync_tokens')
+        .select('sync_token, updated_at')
+        .eq('user_id', user.user.id)
+        .single();
+
+      if (error && error.code !== 'PGRST116') { // PGRST116 is "no rows returned"
+        throw error;
+      }
+
+      const { data: session } = await supabase.auth.getSession();
+      const hasValidToken = !!session?.session?.provider_token;
+
+      return {
+        lastSynced: syncToken?.updated_at || null,
+        hasValidToken,
+        error: null
+      };
+    } catch (error) {
+      console.error('Error getting sync state:', error);
+      return {
+        lastSynced: null,
+        hasValidToken: false,
+        error: 'Failed to get sync state'
+      };
+    }
+  }
+
+  async syncCalendar(): Promise<SyncState> {
+    try {
+      const { data: session } = await supabase.auth.getSession();
+      if (!session?.session) {
+        throw new Error('No active session');
+      }
+
+      const { provider_token } = session.session;
+      if (!provider_token) {
+        throw new Error('No valid provider token');
+      }
+
+      // Fetch events based on provider
+      const provider = session.session.user.app_metadata.provider;
+      let events: CalendarEvent[] = [];
+      
+      if (provider === 'google') {
+        events = await this.fetchGoogleCalendarEvents(session.session);
+      } else if (provider === 'azure') {
+        events = await this.fetchMicrosoftCalendarEvents(session.session);
+      }
+
+      // Cache events in localStorage
+      this.cachedEvents = events;
+      localStorage.setItem('cachedEvents', JSON.stringify(events));
+
+      // Update sync token in Supabase
+      const now = new Date().toISOString();
+      const { error } = await supabase
+        .from('calendar_sync_tokens')
+        .upsert({ 
+          user_id: session.session.user.id,
+          sync_token: now,
+          updated_at: now
+        });
+
+      if (error) throw error;
+
+      return {
+        lastSynced: now,
+        hasValidToken: true,
+        error: null
+      };
+    } catch (error: any) {
+      console.error('Error syncing calendar:', error);
+      return {
+        lastSynced: null,
+        hasValidToken: false,
+        error: error.message || 'Failed to sync calendar'
+      };
+    }
+  }
+
+  async getCalendarEvents(startDate: Date, endDate: Date): Promise<CalendarEvent[]> {
+    // Filter cached events based on date range
+    return this.cachedEvents.filter(event => {
+      const eventStart = event.start || new Date(`${event.date}T${event.start_time}`);
+      const eventEnd = event.end || new Date(`${event.date}T${event.end_time}`);
+      return eventStart >= startDate && eventEnd <= endDate;
+    });
+  }
+
+  async requestCalendarAccess(): Promise<boolean> {
+    try {
+      // First check if we have a session
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      
+      if (sessionError) {
+        console.error('Error getting session:', sessionError);
+        throw new Error('Failed to get session');
+      }
+
+      if (!session) {
+        // If no session, try to sign in with the default provider
+        const { data: signInData, error: signInError } = await supabase.auth.signInWithOAuth({
+          provider: 'google',
+          options: {
+            redirectTo: 'http://localhost:5173/auth/callback',
+            queryParams: {
+              access_type: 'offline',
+              prompt: 'consent'
+            }
+          }
+        });
+
+        if (signInError) {
+          console.error('Error signing in:', signInError);
+          throw new Error('Failed to sign in');
+        }
+
+        if (!signInData?.url) {
+          throw new Error('No sign-in URL received');
+        }
+
+        // Open the sign-in URL in Electron
+        if (window.electron) {
+          window.electron.openExternal(signInData.url);
+        } else {
+          window.open(signInData.url, '_blank');
+        }
+        return true;
+      }
+
+      // If we have a session, proceed with calendar access
+      const provider = session.user.app_metadata.provider;
+      const functionName = provider === 'google' ? 'fetch-calendar-events' : 'fetch-microsoft-calendar';
+
+      const { data, error } = await supabase.functions.invoke(functionName, {
+        body: { action: 'request_access' }
+      });
+
+      if (error) throw error;
+
+      // The function should return a URL for OAuth consent
+      if (data?.authUrl) {
+        // Open the auth URL in Electron
+        if (window.electron) {
+          window.electron.openExternal(data.authUrl);
+        } else {
+          window.open(data.authUrl, '_blank');
+        }
+        return true;
+      }
+
+      return false;
+    } catch (error) {
+      console.error('Error requesting calendar access:', error);
+      throw error;
+    }
   }
 
   public async fetchAvailabilitySlots(): Promise<AvailabilitySlot[]> {
@@ -347,36 +519,6 @@ class CalendarSyncService {
     return conflicts;
   }
 
-  public async updateLastSync(): Promise<void> {
-    // Store the last sync time in localStorage
-    this.lastSync = new Date();
-    localStorage.setItem('lastSync', this.lastSync.toISOString());
-    
-    // Store in Supabase
-    const { data: user } = await supabase.auth.getUser();
-    if (user?.user) {
-      try {
-        const { error } = await supabase
-          .from('calendar_sync_tokens')
-          .upsert({
-            user_id: user.user.id,
-            sync_token: this.lastSync.toISOString(),
-            updated_at: this.lastSync.toISOString()
-          }, { onConflict: 'user_id' });
-          
-        if (error) {
-          console.error('Error updating last sync:', error);
-        }
-      } catch (error) {
-        console.error('Error updating last sync:', error);
-      }
-    }
-  }
-
-  public getLastSync(): Date | null {
-    return this.lastSync;
-  }
-
   public startSync(): void {
     if (this.syncInterval) {
       return;
@@ -385,33 +527,11 @@ class CalendarSyncService {
     this.syncInterval = setInterval(async () => {
       try {
         const { data: session } = await supabase.auth.getSession();
-        if (!session?.session) {
+        if (!session?.session?.provider_token) {
           return;
         }
 
-        const { provider_token } = session.session;
-        if (!provider_token) {
-          return;
-        }
-
-        let events: CalendarEvent[] = [];
-        const provider = session.session.user.app_metadata.provider;
-        
-        if (provider === 'google') {
-          events = await this.fetchGoogleCalendarEvents(session.session);
-        } else if (provider === 'azure') {
-          events = await this.fetchMicrosoftCalendarEvents(session.session);
-        }
-
-        const slots = await this.fetchAvailabilitySlots();
-        const conflicts = this.checkForConflicts(slots, events);
-
-        // Emit conflicts to the renderer process
-        if (conflicts.length > 0) {
-          ipcRenderer.send('calendar-conflicts', conflicts);
-        }
-
-        await this.updateLastSync();
+        await this.syncCalendar();
       } catch (error) {
         console.error('Error during calendar sync:', error);
       }
@@ -588,4 +708,6 @@ class CalendarSyncService {
   }
 }
 
-export default CalendarSyncService; 
+// Export the singleton instance
+const calendarSyncService = CalendarSyncService.getInstance();
+export default calendarSyncService; 
